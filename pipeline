@@ -1,0 +1,31 @@
+# Deep learning pipeline for object detection(bbox)
+
+1. Data
+- dataset (COCO format)
+- (augmented dataset)
+- dataloader(for train)
+- dataloader(for infer)
+- data_utils
+    - image_preprocessing
+    - image_augmentation (label 처리할 때 cls, bbox, segment, kp 구분해서 처리하기)
+- open_dataset
+    - coco
+    - mot
+    - crowdhuman
+    - citypersons
+
+
+2. Model
+- backbones
+- neck
+- head
+- model_utils
+- detector
+    - yolox
+
+
+3. Train
+- losses
+- schedulers
+- callbacks(?? 이 이름이 맞나)
+-
