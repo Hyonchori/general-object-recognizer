@@ -32,6 +32,12 @@ def resample_segments(segments, n=1000):
     return segments
 
 
+def segment2box(segment, width, height):
+    # Convert 1 segment label to 1 box label, applying inside-image constraint (xy1, xy2, ...) -> (xyxy)
+    x, y = segment.T
+    inside = (x >= 0) & (y >= 0)
+
+
 def random_perspective(
         img: np.ndarray,
         labels: dict,
@@ -105,6 +111,9 @@ def random_perspective(
             print(seg_r)
             for i, (seg, cls) in enumerate(seg_r):
                 xy = np.ones((len(seg), 3))
-
+                xy[:, :2] = seg
+                xy = xy @ M.T
+                xy = xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]
+                bboxes = segment2box(xy, width, height)
 
     return img, labels
