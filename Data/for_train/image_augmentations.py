@@ -9,7 +9,7 @@ import numpy as np
 
 def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.2):
     # box1(4,n), box2(4,n)
-    # Compute candidate boxes which include follwing 5 things:
+    # Compute candidate boxes which include following 5 things:
     # box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio
     w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
     w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
@@ -32,10 +32,20 @@ def resample_segments(segments, n=1000):
     return segments
 
 
-def segment2box(segment, width, height):
-    # Convert 1 segment label to 1 box label, applying inside-image constraint (xy1, xy2, ...) -> (xyxy)
+def segment2box(segment):
+    # Convert 1 segment label to 1 box label, (xy1, xy2, ...) -> (xyxy)
     x, y = segment.T
-    inside = (x >= 0) & (y >= 0)
+    return np.array([x.min(), y.min(), x.max(), y.max()])
+
+
+def get_valid_segment_indices(segments, width, height):
+    # filtering segments that exist in out of image
+    valid_indices = []
+    for segment in segments:
+        x, y = segment.T
+        valid = x.min() < width and y.min() < height and x.max() > 0 and y.max() > 0
+        valid_indices.append(valid)
+    return valid_indices
 
 
 def random_perspective(
@@ -105,15 +115,13 @@ def random_perspective(
             labels[label] = bboxes
 
         elif label == "segmentation":
-            print("??")
             segments = labels[label]
             seg_r = resample_segments(segments)
-            print(seg_r)
             for i, (seg, cls) in enumerate(seg_r):
                 xy = np.ones((len(seg), 3))
                 xy[:, :2] = seg
                 xy = xy @ M.T
                 xy = xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]
-                bboxes = segment2box(xy, width, height)
+                labels[label][i][0] = xy
 
     return img, labels

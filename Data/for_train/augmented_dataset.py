@@ -7,7 +7,28 @@ import numpy as np
 from torch.utils.data import Dataset
 
 from general_object_recognizer.Data.for_train.image_augmentations import \
-    random_perspective
+    random_perspective, get_valid_segment_indices
+
+
+def get_mosaic_coordinate(mosaic_image, mosaic_index, xc, yc, w, h, input_h, input_w):
+    # TODO update doc
+    # index0 to top left part of image
+    if mosaic_index == 0:
+        x1, y1, x2, y2 = max(xc - w, 0), max(yc - h, 0), xc, yc
+        small_coord = w - (x2 - x1), h - (y2 - y1), w, h
+    # index1 to top right part of image
+    elif mosaic_index == 1:
+        x1, y1, x2, y2 = xc, max(yc - h, 0), min(xc + w, input_w * 2), yc
+        small_coord = 0, h - (y2 - y1), min(w, x2 - x1), h
+    # index2 to bottom left part of image
+    elif mosaic_index == 2:
+        x1, y1, x2, y2 = max(xc - w, 0), yc, xc, min(input_h * 2, yc + h)
+        small_coord = w - (x2 - x1), 0, w, min(y2 - y1, h)
+    # index2 to bottom right part of image
+    elif mosaic_index == 3:
+        x1, y1, x2, y2 = xc, yc, min(xc + w, input_w * 2), min(input_h * 2, yc + h)  # noqa
+        small_coord = 0, 0, min(w, x2 - x1), min(y2 - y1, h)
+    return (x1, y1, x2, y2), small_coord
 
 
 class Colors:
@@ -60,43 +81,80 @@ class AugmentedDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.enable_mosaic:
+            mosaic_labels = {t: [] for t in self.dataset.targets}
+            input_dim = self.dataset.img_size
+            input_h, input_w = input_dim[0], input_dim[1]
+
+            # mosaic center x, y
+            yc = int(random.uniform(0.5 * input_h, 1.5 * input_h))
+            xc = int(random.uniform(0.5 * input_w, 1.5 * input_w))
+
+            # 3 additional image indices
             indices = [idx] + [random.randint(0, len(self.dataset) - 1) for _ in range(3)]
-            for i_mosaic, index in enumerate(indices):
-                img, labels, _, _ = self.dataset.pull_item(index)
-                for label in labels:
-                    if label == "bbox":
-                        for bbox in labels["bbox"]:
-                            color = colors(bbox[-1], True)
-                            cv2.rectangle(img, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
-                                          color)
-                    elif label == "segmentation":
-                        for seg, cls in labels["segmentation"]:
-                            color = colors(cls, True)
-                            for x, y in seg:
-                                cv2.circle(img, (int(x), int(y)), 1, color, -1)
+            for i, index in enumerate(indices):
+                img, _labels, (h0, w0), _ = self.dataset.pull_item(index)
+                scale = min(1. * input_h / h0, 1. * input_w / w0)
+                img = cv2.resize(
+                    img, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_LINEAR
+                )
+                h, w, _ = img.shape
+                print(img.shape)
+                if i == 0:
+                    mosaic_img = np.full((input_h * 2, input_w * 2, 3), 114, dtype=np.uint8)
 
-                img_p, labels = random_perspective(img, labels)
-                for label in labels:
-                    if label == "bbox":
-                        for bbox in labels["bbox"]:
-                            color = colors(bbox[-1], True)
-                            cv2.rectangle(img_p, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
-                                          color)
-                    elif label == "segmentation":
-                        for seg, cls in labels["segmentation"]:
-                            color = colors(cls, True)
-                            for x, y in seg:
-                                cv2.circle(img_p, (int(x), int(y)), 1, color, -1)
+                # large image box and small image box
+                (l_x1, l_y1, l_x2, l_y2), (s_x1, s_y1, s_x2, s_y2) = get_mosaic_coordinate(
+                    mosaic_img, i, xc, yc, w, h, input_h, input_w
+                )
+                mosaic_img[l_y1: l_y2, l_x1: l_x2] = img[s_y1: s_y2, s_x1: s_x2]
+                padw, padh = l_x1 - s_x1, l_y1 - s_y1
 
-                cv2.imshow("img0", img)
-                cv2.imshow("img_p", img_p)
-                cv2.waitKey(0)
-        pass
+                labels = _labels.copy()
+                for label in labels:
+                    if len(labels[label]) > 0:
+                        if label == "bbox":
+                            labels[label][:, 0::2][:, :-1] = labels[label][:, 0::2][:, :-1] * scale + padw
+                            labels[label][:, 1::2] = labels[label][:, 1::2] * scale + padh
+                        elif label == "segmentation":
+                            for seg_i in range(labels[label].shape[0]):
+                                labels[label][seg_i][0][:, 0:1] = labels[label][seg_i][0][:, 0:1] * scale + padw
+                                labels[label][seg_i][0][:, 1:2] = labels[label][seg_i][0][:, 1:2] * scale + padh
+                        mosaic_labels[label].append(labels[label])
+
+            for label in mosaic_labels:
+                mosaic_labels[label] = np.concatenate(mosaic_labels[label], 0)
+                if label == "bbox":
+                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 0] < 2 * input_w]
+                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 1] < 2 * input_h]
+                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 2] > 0]
+                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 3] > 0]
+                elif label == "segmentation":
+                    print(mosaic_labels[label][:, 0])
+                    print(len(mosaic_labels[label]))
+                    valid_segment_indices = get_valid_segment_indices(
+                        mosaic_labels[label][:, 0], 2 * input_w, 2 * input_h
+                    )
+                    mosaic_labels[label] = mosaic_labels[label][valid_segment_indices]
+                    print(len(mosaic_labels[label]))
+
+            for label in mosaic_labels:
+                if label == "bbox":
+                    for bbox in mosaic_labels["bbox"]:
+                        color = colors(bbox[-1], True)
+                        cv2.rectangle(mosaic_img, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
+                                      color, 2)
+                elif label == "segmentation":
+                    for seg, cls in mosaic_labels["segmentation"]:
+                        color = colors(cls, True)
+                        for x, y in seg:
+                            cv2.circle(mosaic_img, (int(x), int(y)), 1, color, -1)
+            cv2.imshow("img", mosaic_img)
+            cv2.waitKey(0)
 
 
 if __name__ == "__main__":
-    img_dir = "/home/daton/Downloads/coco/val2017"
-    annot_path = "/home/daton/Downloads/coco/annotations_trainval2017/annotations/instances_val2017.json"
+    img_dir = "/media/jhc/4AD250EDD250DEAF/dataset/coco/val2017"
+    annot_path = "/media/jhc/4AD250EDD250DEAF/dataset/coco/annotations_trainval2017/annotations/instances_val2017.json"
 
     from general_object_recognizer.Data.for_train.coco_dataset import COCODataset
     dataset = COCODataset(
