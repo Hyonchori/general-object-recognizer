@@ -54,15 +54,26 @@ def get_valid_bbox_indices(bboxes, width, height):
 
 def scale_and_shift_bboxes(bboxes, scale, w_shift, h_shift):
     # scale and shift bboxes(n, 5)
-    bboxes[:, 0::2][:, :-1] = bboxes[:, 0::2][:, :-1] * scale + w_shift
-    bboxes[:, 1::2] = bboxes[:, 1::2] * scale + h_shift
+    if isinstance(scale, tuple):
+        x_scale = scale[0]
+        y_scale = scale[1]
+    else:
+        x_scale, y_scale = scale, scale
+    bboxes[:, 0::2][:, :-1] = bboxes[:, 0::2][:, :-1] * x_scale + w_shift
+    bboxes[:, 1::2] = bboxes[:, 1::2] * y_scale + h_shift
     return bboxes
 
 
 def scale_and_shift_segments(segments, scale, w_shift, h_shift):
+    # scale and shift segments(n, 2)
+    if isinstance(scale, tuple):
+        x_scale = scale[0]
+        y_scale = scale[1]
+    else:
+        x_scale, y_scale = scale, scale
     for seg_i in range(segments.shape[0]):
-        segments[seg_i][0][:, 0:1] = segments[seg_i][0][:, 0:1] * scale + w_shift
-        segments[seg_i][0][:, 1:2] = segments[seg_i][0][:, 1:2] * scale + h_shift
+        segments[seg_i][0][:, 0:1] = segments[seg_i][0][:, 0:1] * x_scale + w_shift
+        segments[seg_i][0][:, 1:2] = segments[seg_i][0][:, 1:2] * y_scale + h_shift
     return segments
 
 
@@ -213,5 +224,109 @@ def random_perspective(
 
 
 def get_mixup_img(img, labels, img2, labels2):
+    # applies mixup augmentation
+    r = np.random.beta(32., 32.)  # mixup ratio, alpha=beta=32.0
+    img = (img * r + img2 * (1 - r)).astype(np.uint8)
+    for label in labels:
+        labels[label] = np.concatenate((labels[label], labels2[label]), 0)
     return img, labels
 
+
+def letterbox(
+        img: np.ndarray,
+        labels=None,
+        new_shape=(640, 640),
+        color: int = (114, 114, 114),
+        auto: bool = True,
+        stretch: bool = False,
+        stride: int = 32,
+        fit: bool = False
+):
+    # Resize and pad image while meeting stride-multiple constraints
+    shape = img.shape[: 2]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # if fit == True: all components of new_shape should be divided by stride for model input
+    if fit:
+        new_shape = [x + (x / stride) % stride for x in new_shape]
+
+    if img.shape[:2] == new_shape:
+        return img, labels, 1., (0, 0)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+    # Compute padding
+    ratio = r, r  # width, height ratios
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif stretch:  # stretch
+        dw, dh = 0.0, 0.0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    if shape[::-1] != new_unpad:  # resize
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+
+    for label in labels:
+        if len(labels[label]) > 0:
+            if label == "bbox":
+                labels[label] = scale_and_shift_bboxes(labels[label], ratio, dw, dh)
+            elif label == "segmentation":
+                labels[label] = scale_and_shift_segments(labels[label], ratio, dw, dh)
+
+    return img, labels, ratio, (dw, dh)
+
+
+def color_aug(img):
+    def _convert(img, alpha=1, beta=0):
+        tmp = img.astype(float) * alpha + beta
+        tmp[tmp < 0] = 0
+        tmp[tmp > 255] = 255
+        img[:] = tmp
+
+    img = img.copy()
+
+    if random.randrange(2):
+        _convert(img, beta=random.uniform(-32, 32))
+
+    if random.randrange(2):
+        _convert(img, alpha=random.uniform(0.5, 1.5))
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+    if random.randrange(2):
+        tmp = img[:, :, 0].astype(int) + random.randint(-18, 18)
+        tmp %= 180
+        img[:, :, 0] = tmp
+
+    if random.randrange(2):
+        _convert(img[:, :, 1], alpha=random.uniform(0.5, 1.5))
+
+    img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+    return img
+
+
+def flip_lr(img, labels):
+    _, width, _ = img.shape
+    #if random.randrange(2):
+    if True:
+        img = img[:, ::-1].astype(np.uint8)
+        for label in labels:
+            if label == "bbox":
+                labels[label][:, 0::2][:, :-1] = width - labels[label][:, 2::-2]
+            elif label == "segmentation":
+                segments = labels[label][:, 0]
+                print(segments.shape)
+                for i, seg in enumerate(segments):
+                    seg[:, 0] = width - seg[:, 0]
+    return img, labels

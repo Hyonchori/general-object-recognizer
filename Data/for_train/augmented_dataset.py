@@ -7,30 +7,12 @@ import numpy as np
 from torch.utils.data import Dataset
 
 from general_object_recognizer.Data.for_train.image_augmentations import \
-    get_mosaic_img, random_perspective, get_mixup_img, \
+    get_mosaic_img, random_perspective, letterbox, get_mixup_img, color_aug, flip_lr, \
     scale_and_shift_bboxes , scale_and_shift_segments, \
     get_valid_segment_indices, get_valid_bbox_indices
-
-
-class Colors:
-    # Ultralytics color palette https://ultralytics.com/
-    def __init__(self):
-        # hex = matplotlib.colors.TABLEAU_COLORS.values()
-        hex = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
-               '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
-        self.palette = [self.hex2rgb('#' + c) for c in hex]
-        self.n = len(self.palette)
-
-    def __call__(self, i, bgr=False):
-        c = self.palette[int(i) % self.n]
-        return (c[2], c[1], c[0]) if bgr else c
-
-    @staticmethod
-    def hex2rgb(h):  # rgb order (PIL)
-        return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
-
-
-colors = Colors()
+from general_object_recognizer.Data.data_utils import plot_labels
+# from .image_augmentations import (get_mosaic_img, random_perspective, letterbox, get_mixup_img)
+# from ..data_utils import plot_labels
 
 
 class AugmentedDataset(Dataset):
@@ -48,7 +30,7 @@ class AugmentedDataset(Dataset):
             scale: float = (0.5, 1.5),
             shear: float = 2.0,
             perspective: float = 0.0,
-            mixup_prob: float = 1.0,
+            mixup_prob: float = 0.0,
 
             blur_aug: bool = True,
             noise_aug: bool = True,
@@ -109,34 +91,26 @@ class AugmentedDataset(Dataset):
                 while len(mixup_labels["bbox"]) == 0:
                     mixup_idx = random.randint(0, len(self.dataset) - 1)
                     mixup_labels = self.dataset.load_anno(mixup_idx)
-                mixup_img, mixup_labels, (mixup_h, mixup_w), _ = self.dataset.pull_item(mixup_idx)
-                ratio = min(input_h / mixup_h, input_w / mixup_w)
-                mixup_img = cv2.resize(
+                mixup_img, mixup_labels, _, _ = self.dataset.pull_item(mixup_idx)
+                mixup_img, mixup_labels, _, _ = letterbox(
                     mixup_img,
-                    (int(mixup_h * ratio), int(mixup_w * ratio)), interpolation=cv2.INTER_LINEAR
+                    mixup_labels,
+                    (input_h, input_w),
+                    auto=False
                 )
-                for label in mixup_labels:
-                    if len(mixup_labels[label]) > 0:
-                        if label == "bbox":
-                            mixup_labels[label] = scale_and_shift_bboxes(mixup_labels[label], ratio, 0, 0)
-                        elif label == "segmentation":
-                            mixup_labels[label] = scale_and_shift_segments(mixup_labels[label], ratio, 0, 0)
-                cv2.imshow('mix', mixup_img)
+                mosaic_img, mosaic_labels = get_mixup_img(
+                    mosaic_img,
+                    mosaic_labels,
+                    mixup_img,
+                    mixup_labels
+                )
 
-            for label in mosaic_labels:
-                if label == "bbox":
-                    for bbox in mosaic_labels["bbox"]:
-                        color = colors(bbox[-1], True)
-                        cv2.rectangle(mosaic_img, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
-                                      color, 2)
-                elif label == "segmentation":
-                    ref_img = np.zeros_like(mosaic_img)
-                    for seg, cls in mosaic_labels["segmentation"]:
-                        color = colors(cls, True)
-                        cv2.fillPoly(ref_img, [seg.astype(np.int64)], color)
-            mosaic_img = cv2.addWeighted(mosaic_img, 1, ref_img, 0.5, 0)
-            cv2.imshow("img", mosaic_img)
-            cv2.waitKey(0)
+            # basic aug (_distort, flip)
+            cv2.imshow("img0", mosaic_img)
+            mosaic_img = color_aug(mosaic_img)
+            mosaic_img, mosaic_labels = flip_lr(mosaic_img, mosaic_labels)
+            cv2.imshow("img_a", mosaic_img)
+            plot_labels(mosaic_img, mosaic_labels)
 
 
 if __name__ == "__main__":
