@@ -7,28 +7,9 @@ import numpy as np
 from torch.utils.data import Dataset
 
 from general_object_recognizer.Data.for_train.image_augmentations import \
-    random_perspective, get_valid_segment_indices
-
-
-def get_mosaic_coordinate(mosaic_image, mosaic_index, xc, yc, w, h, input_h, input_w):
-    # TODO update doc
-    # index0 to top left part of image
-    if mosaic_index == 0:
-        x1, y1, x2, y2 = max(xc - w, 0), max(yc - h, 0), xc, yc
-        small_coord = w - (x2 - x1), h - (y2 - y1), w, h
-    # index1 to top right part of image
-    elif mosaic_index == 1:
-        x1, y1, x2, y2 = xc, max(yc - h, 0), min(xc + w, input_w * 2), yc
-        small_coord = 0, h - (y2 - y1), min(w, x2 - x1), h
-    # index2 to bottom left part of image
-    elif mosaic_index == 2:
-        x1, y1, x2, y2 = max(xc - w, 0), yc, xc, min(input_h * 2, yc + h)
-        small_coord = w - (x2 - x1), 0, w, min(y2 - y1, h)
-    # index2 to bottom right part of image
-    elif mosaic_index == 3:
-        x1, y1, x2, y2 = xc, yc, min(xc + w, input_w * 2), min(input_h * 2, yc + h)  # noqa
-        small_coord = 0, 0, min(w, x2 - x1), min(y2 - y1, h)
-    return (x1, y1, x2, y2), small_coord
+    get_mosaic_img, random_perspective, get_mixup_img, \
+    scale_and_shift_bboxes , scale_and_shift_segments, \
+    get_valid_segment_indices, get_valid_bbox_indices
 
 
 class Colors:
@@ -59,7 +40,16 @@ class AugmentedDataset(Dataset):
             img_size: int = (720, 1280),
             enable_mosaic: bool = True,
             enable_mixup: bool = True,
+
+            # basic augmentation (random perspective, mixup)
             basic_aug: bool = True,
+            degrees: int = 10,
+            translate: float = 0.1,
+            scale: float = (0.5, 1.5),
+            shear: float = 2.0,
+            perspective: float = 0.0,
+            mixup_prob: float = 1.0,
+
             blur_aug: bool = True,
             noise_aug: bool = True,
             weather_aug: bool = True,
@@ -70,7 +60,15 @@ class AugmentedDataset(Dataset):
         self.img_size = img_size
         self.enable_mosaic = enable_mosaic
         self.enable_mixup = enable_mixup
+
         self.basic_aug = basic_aug
+        self.degrees = degrees
+        self.translate = translate
+        self.scale = scale
+        self.shear = shear
+        self.perspective = perspective
+        self.mixup_prob = mixup_prob
+
         self.blur_aug = blur_aug
         self.noise_aug = noise_aug
         self.weather_aug = weather_aug
@@ -85,57 +83,45 @@ class AugmentedDataset(Dataset):
             input_dim = self.dataset.img_size
             input_h, input_w = input_dim[0], input_dim[1]
 
-            # mosaic center x, y
-            yc = int(random.uniform(0.5 * input_h, 1.5 * input_h))
-            xc = int(random.uniform(0.5 * input_w, 1.5 * input_w))
-
             # 3 additional image indices
             indices = [idx] + [random.randint(0, len(self.dataset) - 1) for _ in range(3)]
-            for i, index in enumerate(indices):
-                img, _labels, (h0, w0), _ = self.dataset.pull_item(index)
-                scale = min(1. * input_h / h0, 1. * input_w / w0)
-                img = cv2.resize(
-                    img, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_LINEAR
-                )
-                h, w, _ = img.shape
-                print(img.shape)
-                if i == 0:
-                    mosaic_img = np.full((input_h * 2, input_w * 2, 3), 114, dtype=np.uint8)
+            img_infos = [self.dataset.pull_item(index)[:-1] for index in indices]
 
-                # large image box and small image box
-                (l_x1, l_y1, l_x2, l_y2), (s_x1, s_y1, s_x2, s_y2) = get_mosaic_coordinate(
-                    mosaic_img, i, xc, yc, w, h, input_h, input_w
-                )
-                mosaic_img[l_y1: l_y2, l_x1: l_x2] = img[s_y1: s_y2, s_x1: s_x2]
-                padw, padh = l_x1 - s_x1, l_y1 - s_y1
+            # get mosaic image
+            mosaic_img, mosaic_labels = get_mosaic_img(
+                img_infos, mosaic_labels, input_w, input_h
+            )
 
-                labels = _labels.copy()
-                for label in labels:
-                    if len(labels[label]) > 0:
+            # apply random perspective
+            mosaic_img, mosaic_labels = random_perspective(
+                mosaic_img,
+                mosaic_labels,
+                degrees=self.degrees,
+                translate=self.translate,
+                scale=self.scale,
+                shear=self.shear,
+                perspective=self.perspective,
+                border=(-input_h // 2, -input_w // 2),
+            )
+
+            if self.enable_mixup and random.random() < self.mixup_prob:
+                mixup_labels = {t: [] for t in self.dataset.targets}
+                while len(mixup_labels["bbox"]) == 0:
+                    mixup_idx = random.randint(0, len(self.dataset) - 1)
+                    mixup_labels = self.dataset.load_anno(mixup_idx)
+                mixup_img, mixup_labels, (mixup_h, mixup_w), _ = self.dataset.pull_item(mixup_idx)
+                ratio = min(input_h / mixup_h, input_w / mixup_w)
+                mixup_img = cv2.resize(
+                    mixup_img,
+                    (int(mixup_h * ratio), int(mixup_w * ratio)), interpolation=cv2.INTER_LINEAR
+                )
+                for label in mixup_labels:
+                    if len(mixup_labels[label]) > 0:
                         if label == "bbox":
-                            labels[label][:, 0::2][:, :-1] = labels[label][:, 0::2][:, :-1] * scale + padw
-                            labels[label][:, 1::2] = labels[label][:, 1::2] * scale + padh
+                            mixup_labels[label] = scale_and_shift_bboxes(mixup_labels[label], ratio, 0, 0)
                         elif label == "segmentation":
-                            for seg_i in range(labels[label].shape[0]):
-                                labels[label][seg_i][0][:, 0:1] = labels[label][seg_i][0][:, 0:1] * scale + padw
-                                labels[label][seg_i][0][:, 1:2] = labels[label][seg_i][0][:, 1:2] * scale + padh
-                        mosaic_labels[label].append(labels[label])
-
-            for label in mosaic_labels:
-                mosaic_labels[label] = np.concatenate(mosaic_labels[label], 0)
-                if label == "bbox":
-                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 0] < 2 * input_w]
-                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 1] < 2 * input_h]
-                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 2] > 0]
-                    mosaic_labels[label] = mosaic_labels[label][mosaic_labels[label][:, 3] > 0]
-                elif label == "segmentation":
-                    print(mosaic_labels[label][:, 0])
-                    print(len(mosaic_labels[label]))
-                    valid_segment_indices = get_valid_segment_indices(
-                        mosaic_labels[label][:, 0], 2 * input_w, 2 * input_h
-                    )
-                    mosaic_labels[label] = mosaic_labels[label][valid_segment_indices]
-                    print(len(mosaic_labels[label]))
+                            mixup_labels[label] = scale_and_shift_segments(mixup_labels[label], ratio, 0, 0)
+                cv2.imshow('mix', mixup_img)
 
             for label in mosaic_labels:
                 if label == "bbox":
@@ -144,10 +130,11 @@ class AugmentedDataset(Dataset):
                         cv2.rectangle(mosaic_img, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
                                       color, 2)
                 elif label == "segmentation":
+                    ref_img = np.zeros_like(mosaic_img)
                     for seg, cls in mosaic_labels["segmentation"]:
                         color = colors(cls, True)
-                        for x, y in seg:
-                            cv2.circle(mosaic_img, (int(x), int(y)), 1, color, -1)
+                        cv2.fillPoly(ref_img, [seg.astype(np.int64)], color)
+            mosaic_img = cv2.addWeighted(mosaic_img, 1, ref_img, 0.5, 0)
             cv2.imshow("img", mosaic_img)
             cv2.waitKey(0)
 

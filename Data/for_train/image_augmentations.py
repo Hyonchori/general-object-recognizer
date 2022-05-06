@@ -32,20 +32,105 @@ def resample_segments(segments, n=1000):
     return segments
 
 
-def segment2box(segment):
-    # Convert 1 segment label to 1 box label, (xy1, xy2, ...) -> (xyxy)
-    x, y = segment.T
-    return np.array([x.min(), y.min(), x.max(), y.max()])
-
-
 def get_valid_segment_indices(segments, width, height):
-    # filtering segments that exist in out of image
+    # filtering segments(n, 2) that exist in out of image
     valid_indices = []
     for segment in segments:
         x, y = segment.T
-        valid = x.min() < width and y.min() < height and x.max() > 0 and y.max() > 0
+        bbox = [x.min(), y.min(), x.max(), y.max()]
+        valid = bbox[0] < width and bbox[1] < height and bbox[2] > 0 and bbox[3] > 0
         valid_indices.append(valid)
     return valid_indices
+
+
+def get_valid_bbox_indices(bboxes, width, height):
+    # filtering bboxes(n, 5) that exist in out of image
+    valid_indices = []
+    for bbox in bboxes:
+        valid = bbox[0] < width and bbox[1] < height and bbox[2] > 0 and bbox[3] > 0
+        valid_indices.append(valid)
+    return valid_indices
+
+
+def scale_and_shift_bboxes(bboxes, scale, w_shift, h_shift):
+    # scale and shift bboxes(n, 5)
+    bboxes[:, 0::2][:, :-1] = bboxes[:, 0::2][:, :-1] * scale + w_shift
+    bboxes[:, 1::2] = bboxes[:, 1::2] * scale + h_shift
+    return bboxes
+
+
+def scale_and_shift_segments(segments, scale, w_shift, h_shift):
+    for seg_i in range(segments.shape[0]):
+        segments[seg_i][0][:, 0:1] = segments[seg_i][0][:, 0:1] * scale + w_shift
+        segments[seg_i][0][:, 1:2] = segments[seg_i][0][:, 1:2] * scale + h_shift
+    return segments
+
+
+def get_mosaic_coordinate(mosaic_index, xc, yc, w, h, input_h, input_w):
+    # TODO update doc
+    # index0 to top left part of image
+    if mosaic_index == 0:
+        x1, y1, x2, y2 = max(xc - w, 0), max(yc - h, 0), xc, yc
+        small_coord = w - (x2 - x1), h - (y2 - y1), w, h
+    # index1 to top right part of image
+    elif mosaic_index == 1:
+        x1, y1, x2, y2 = xc, max(yc - h, 0), min(xc + w, input_w * 2), yc
+        small_coord = 0, h - (y2 - y1), min(w, x2 - x1), h
+    # index2 to bottom left part of image
+    elif mosaic_index == 2:
+        x1, y1, x2, y2 = max(xc - w, 0), yc, xc, min(input_h * 2, yc + h)
+        small_coord = w - (x2 - x1), 0, w, min(y2 - y1, h)
+    # index2 to bottom right part of image
+    elif mosaic_index == 3:
+        x1, y1, x2, y2 = xc, yc, min(xc + w, input_w * 2), min(input_h * 2, yc + h)  # noqa
+        small_coord = 0, 0, min(w, x2 - x1), min(y2 - y1, h)
+    return (x1, y1, x2, y2), small_coord
+
+
+def get_mosaic_img(img_infos, mosaic_labels, input_w, input_h):
+    # mosaic center x, y
+    yc = int(random.uniform(0.5 * input_h, 1.5 * input_h))
+    xc = int(random.uniform(0.5 * input_w, 1.5 * input_w))
+
+    for i, (img, _labels, (h0, w0)) in enumerate(img_infos):
+        scale = min(1. * input_h / h0, 1. * input_w / w0)
+        img = cv2.resize(
+            img, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_LINEAR
+        )
+        h, w, _ = img.shape
+        if i == 0:
+            mosaic_img = np.full((input_h * 2, input_w * 2, 3), 114, dtype=np.uint8)
+
+        # large image box and small image box
+        (l_x1, l_y1, l_x2, l_y2), (s_x1, s_y1, s_x2, s_y2) = get_mosaic_coordinate(
+            i, xc, yc, w, h, input_h, input_w
+        )
+        mosaic_img[l_y1: l_y2, l_x1: l_x2] = img[s_y1: s_y2, s_x1: s_x2]
+        padw, padh = l_x1 - s_x1, l_y1 - s_y1
+
+        labels = _labels.copy()
+        for label in labels:
+            if len(labels[label]) > 0:
+                if label == "bbox":
+                    labels[label] = scale_and_shift_bboxes(labels[label], scale, padw, padh)
+                elif label == "segmentation":
+                    labels[label] = scale_and_shift_segments(labels[label], scale, padw, padh)
+                mosaic_labels[label].append(labels[label])
+
+    for label in mosaic_labels:
+        mosaic_labels[label] = np.concatenate(mosaic_labels[label], 0)
+        if label == "bbox":
+            valid_bbox_indices = get_valid_bbox_indices(
+                mosaic_labels[label], 2 * input_w, 2 * input_h
+            )
+            mosaic_labels[label] = mosaic_labels[label][valid_bbox_indices]
+        elif label == "segmentation":
+            valid_segment_indices = get_valid_segment_indices(
+                mosaic_labels[label][:, 0], 2 * input_w, 2 * input_h
+            )
+            mosaic_labels[label] = mosaic_labels[label][valid_segment_indices]
+
+    return mosaic_img, mosaic_labels
 
 
 def random_perspective(
@@ -54,9 +139,9 @@ def random_perspective(
         degrees: int = 10,
         translate: float = 0.1,
         scale: float = 0.1,
-        shear: int = 10,
+        shear: float = 10.0,
         perspective: float = 0.0,
-        border: int = (0, 0)
+        border = (0, 0)
 ):
     height = img.shape[0] + border[0] * 2
     width = img.shape[1] + border[1] * 2
@@ -74,7 +159,7 @@ def random_perspective(
     # Rotation and Scale
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
-    s = random.uniform(1 - scale, 1 + scale)
+    s = random.uniform(scale[0], scale[1])
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
     # Shear
@@ -125,3 +210,8 @@ def random_perspective(
                 labels[label][i][0] = xy
 
     return img, labels
+
+
+def get_mixup_img(img, labels, img2, labels2):
+    return img, labels
+
