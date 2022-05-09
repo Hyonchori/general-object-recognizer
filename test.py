@@ -1,4 +1,3 @@
-import cv2
 
 from Data.for_train.coco_dataset import COCODataset
 from Data.for_train.augmented_dataset import AugmentedDataset

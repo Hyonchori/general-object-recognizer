@@ -277,12 +277,13 @@ def letterbox(
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
     img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
 
-    for label in labels:
-        if len(labels[label]) > 0:
-            if label == "bbox":
-                labels[label] = scale_and_shift_bboxes(labels[label], ratio, dw, dh)
-            elif label == "segmentation":
-                labels[label] = scale_and_shift_segments(labels[label], ratio, dw, dh)
+    if labels is not None:
+        for label in labels:
+            if len(labels[label]) > 0:
+                if label == "bbox":
+                    labels[label] = scale_and_shift_bboxes(labels[label], ratio, dw, dh)
+                elif label == "segmentation":
+                    labels[label] = scale_and_shift_segments(labels[label], ratio, dw, dh)
 
     return img, labels, ratio, (dw, dh)
 
