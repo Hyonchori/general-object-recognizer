@@ -30,7 +30,9 @@ class AugmentedDataset(Dataset):
             scale: float = (0.5, 1.5),
             shear: float = 2.0,
             perspective: float = 0.0,
-            mixup_prob: float = 0.0,
+            mixup_prob: float = 1.0,
+            color_prob: float = 0.5,
+            flip_prob: float = 0.5,
 
             blur_aug: bool = True,
             noise_aug: bool = True,
@@ -50,6 +52,8 @@ class AugmentedDataset(Dataset):
         self.shear = shear
         self.perspective = perspective
         self.mixup_prob = mixup_prob
+        self.color_prob = color_prob
+        self.flip_prob = flip_prob
 
         self.blur_aug = blur_aug
         self.noise_aug = noise_aug
@@ -107,8 +111,12 @@ class AugmentedDataset(Dataset):
 
             # basic aug (_distort, flip)
             cv2.imshow("img0", mosaic_img)
-            mosaic_img = color_aug(mosaic_img)
-            mosaic_img, mosaic_labels = flip_lr(mosaic_img, mosaic_labels)
+            print(random.random())
+            if random.random() < self.color_prob:
+                mosaic_img = color_aug(mosaic_img)
+            if random.random() < self.flip_prob:
+
+                mosaic_img, mosaic_labels = flip_lr(mosaic_img, mosaic_labels)
             cv2.imshow("img_a", mosaic_img)
             plot_labels(mosaic_img, mosaic_labels)
 

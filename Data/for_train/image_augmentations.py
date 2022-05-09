@@ -318,15 +318,13 @@ def color_aug(img):
 
 def flip_lr(img, labels):
     _, width, _ = img.shape
-    #if random.randrange(2):
-    if True:
+    if random.randrange(2):
         img = img[:, ::-1].astype(np.uint8)
         for label in labels:
             if label == "bbox":
                 labels[label][:, 0::2][:, :-1] = width - labels[label][:, 2::-2]
             elif label == "segmentation":
                 segments = labels[label][:, 0]
-                print(segments.shape)
                 for i, seg in enumerate(segments):
                     seg[:, 0] = width - seg[:, 0]
     return img, labels
