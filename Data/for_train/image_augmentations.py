@@ -152,7 +152,7 @@ def random_perspective(
         scale: float = 0.1,
         shear: float = 10.0,
         perspective: float = 0.0,
-        border = (0, 0)
+        border=(0, 0)
 ):
     height = img.shape[0] + border[0] * 2
     width = img.shape[1] + border[1] * 2
@@ -249,7 +249,7 @@ def letterbox(
 
     # if fit == True: all components of new_shape should be divided by stride for model input
     if fit:
-        new_shape = [x + (x / stride) % stride for x in new_shape]
+        new_shape = [x + (x + stride) % stride for x in new_shape]
 
     if img.shape[:2] == new_shape:
         return img, labels, 1., (0, 0)
@@ -325,6 +325,58 @@ def flip_lr(img, labels):
                 labels[label][:, 0::2][:, :-1] = width - labels[label][:, 2::-2]
             elif label == "segmentation":
                 segments = labels[label][:, 0]
-                for i, seg in enumerate(segments):
+                for seg in segments:
                     seg[:, 0] = width - seg[:, 0]
     return img, labels
+
+
+class BlurAug:
+    def __init__(self):
+        import imgaug.augmenters as iaa
+        self.aug = iaa.OneOf([
+            iaa.GaussianBlur(),
+            iaa.MotionBlur()
+        ])
+
+    def __call__(self, image):
+        image = self.aug(image=image)
+        return image
+
+
+class NoiseAug:
+    def __init__(self):
+        import imgaug.augmenters as iaa
+        self.aug = iaa.OneOf([
+            iaa.AdditiveGaussianNoise(),
+            iaa.Dropout()
+        ])
+
+    def __call__(self, image):
+        image = self.aug(image=image)
+        return image
+
+
+class WeatherAug:
+    def __init__(self):
+        import imgaug.augmenters as iaa
+        self.aug = iaa.OneOf([
+            iaa.Fog(),
+            iaa.Snowflakes(),
+            iaa.Rain()
+        ])
+
+    def __call__(self, image):
+        image = self.aug(image=image)
+        return image
+
+
+if __name__ == "__main__":
+    import imgaug.augmenters as iaa
+    aug = iaa.Fog()
+    img_path = "/home/daton/Downloads/coco/val2017/000000000776.jpg"
+    img = cv2.imread(img_path)
+    cv2.imshow("img", img)
+
+    img = aug(image=img)
+    cv2.imshow("img1", img)
+    cv2.waitKey(0)

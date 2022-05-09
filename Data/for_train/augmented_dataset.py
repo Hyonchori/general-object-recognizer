@@ -1,30 +1,28 @@
 # Dataset that augmentation techniques are added
 
 import random
+from copy import deepcopy
 
-import cv2
 import numpy as np
 from torch.utils.data import Dataset
 
-from general_object_recognizer.Data.for_train.image_augmentations import \
-    get_mosaic_img, random_perspective, letterbox, get_mixup_img, color_aug, flip_lr, \
-    scale_and_shift_bboxes , scale_and_shift_segments, \
-    get_valid_segment_indices, get_valid_bbox_indices
-from general_object_recognizer.Data.data_utils import plot_labels
-# from .image_augmentations import (get_mosaic_img, random_perspective, letterbox, get_mixup_img)
-# from ..data_utils import plot_labels
+from .image_augmentations import (get_mosaic_img, random_perspective, letterbox, get_mixup_img,
+                                  color_aug, flip_lr, BlurAug, NoiseAug, WeatherAug)
+from ..data_utils import filtering_labels
 
 
 class AugmentedDataset(Dataset):
     def __init__(
             self,
             dataset: Dataset,
-            img_size: int = (720, 1280),
-            enable_mosaic: bool = True,
-            enable_mixup: bool = True,
+            img_size=(720, 1280),
+            no_aug: bool = False,
 
-            # basic augmentation (random perspective, mixup)
-            basic_aug: bool = True,
+            # mosaic augmentation
+            enable_mosaic: bool = True,
+            mosaic_prob: float = 1.0,
+
+            # basic augmentation (random perspective, mixup, color, flip)
             degrees: int = 10,
             translate: float = 0.1,
             scale: float = (0.5, 1.5),
@@ -34,18 +32,22 @@ class AugmentedDataset(Dataset):
             color_prob: float = 0.5,
             flip_prob: float = 0.5,
 
-            blur_aug: bool = True,
-            noise_aug: bool = True,
-            weather_aug: bool = True,
+            # additional augmentation (blur, noise, weather)
+            enable_blur: bool = True,
+            enable_noise: bool = True,
+            enable_weather: bool = True,
+            additional_prob: float = 0.5,
+
             preproc=None
     ):
         super().__init__()
         self.dataset = dataset
         self.img_size = img_size
-        self.enable_mosaic = enable_mosaic
-        self.enable_mixup = enable_mixup
+        self.no_aug = no_aug
 
-        self.basic_aug = basic_aug
+        self.enable_mosaic = enable_mosaic
+        self.mosaic_prob = mosaic_prob
+
         self.degrees = degrees
         self.translate = translate
         self.scale = scale
@@ -55,33 +57,44 @@ class AugmentedDataset(Dataset):
         self.color_prob = color_prob
         self.flip_prob = flip_prob
 
-        self.blur_aug = blur_aug
-        self.noise_aug = noise_aug
-        self.weather_aug = weather_aug
+        self.additional_aug = []
+        if enable_blur:
+            self.additional_aug.append(BlurAug())
+        if enable_noise:
+            self.additional_aug.append(NoiseAug())
+        if enable_weather:
+            self.additional_aug.append(WeatherAug())
+        self.enable_add = enable_blur | enable_noise | enable_weather
+        self.additional_prob = additional_prob
+
         self.preproc = preproc
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        if self.enable_mosaic:
-            mosaic_labels = {t: [] for t in self.dataset.targets}
+        if not self.no_aug:
             input_dim = self.dataset.img_size
             input_h, input_w = input_dim[0], input_dim[1]
 
-            # 3 additional image indices
-            indices = [idx] + [random.randint(0, len(self.dataset) - 1) for _ in range(3)]
-            img_infos = [self.dataset.pull_item(index)[:-1] for index in indices]
+            if self.enable_mosaic:
+                mosaic_labels = {t: [] for t in self.dataset.targets}
 
-            # get mosaic image
-            mosaic_img, mosaic_labels = get_mosaic_img(
-                img_infos, mosaic_labels, input_w, input_h
-            )
+                # 3 additional image indices
+                indices = [idx] + [random.randint(0, len(self.dataset) - 1) for _ in range(3)]
+                img_infos = [self.dataset.pull_item(index)[:-1] for index in indices]
+
+                # get mosaic image
+                img, labels = get_mosaic_img(
+                    img_infos, mosaic_labels, input_w, input_h
+                )
+            else:
+                img, labels, _, _ = self.dataset.pull_item(idx)
 
             # apply random perspective
-            mosaic_img, mosaic_labels = random_perspective(
-                mosaic_img,
-                mosaic_labels,
+            img, labels = random_perspective(
+                img,
+                labels,
                 degrees=self.degrees,
                 translate=self.translate,
                 scale=self.scale,
@@ -90,7 +103,8 @@ class AugmentedDataset(Dataset):
                 border=(-input_h // 2, -input_w // 2),
             )
 
-            if self.enable_mixup and random.random() < self.mixup_prob:
+            # apply mixup augmentation
+            if random.random() < self.mixup_prob:
                 mixup_labels = {t: [] for t in self.dataset.targets}
                 while len(mixup_labels["bbox"]) == 0:
                     mixup_idx = random.randint(0, len(self.dataset) - 1)
@@ -102,35 +116,57 @@ class AugmentedDataset(Dataset):
                     (input_h, input_w),
                     auto=False
                 )
-                mosaic_img, mosaic_labels = get_mixup_img(
-                    mosaic_img,
-                    mosaic_labels,
+                img, labels = get_mixup_img(
+                    img,
+                    labels,
                     mixup_img,
                     mixup_labels
                 )
 
             # basic aug (_distort, flip)
-            cv2.imshow("img0", mosaic_img)
-            print(random.random())
             if random.random() < self.color_prob:
-                mosaic_img = color_aug(mosaic_img)
+                img = color_aug(img)
             if random.random() < self.flip_prob:
+                img, mosaic_labels = flip_lr(img, labels)
 
-                mosaic_img, mosaic_labels = flip_lr(mosaic_img, mosaic_labels)
-            cv2.imshow("img_a", mosaic_img)
-            plot_labels(mosaic_img, mosaic_labels)
+            # apply additional augmentations
+            if self.enable_add and random.random() < self.additional_prob:
+                add_idx = random.randint(0, len(self.additional_aug) - 1)
+                add_aug = self.additional_aug[add_idx]
+                img = add_aug(image=img)
+
+            labels = filtering_labels(labels, input_w, input_h)
+            img_shape = img.shape[:2]
+
+            # Preprocessing if self.preproc is not None
+            img_p = img.copy()
+            labels_p = deepcopy(labels)
+            if self.preproc is not None:
+                img_p, labels_p = self.preproc(img_p, labels_p)
+            return img, img_p, labels, labels_p, img_shape, np.array([idx])
+        else:
+            img, labels, img_shape, img_id = self.dataset.pull_item(idx)
+            img_p = img.copy()
+            labels_p = deepcopy(labels)
+            if self.preproc is not None:
+                img_p, labels_p = self.preproc(img_p, labels_p)
+            return img, img_p, labels, labels_p, img_shape, img_id
 
 
 if __name__ == "__main__":
     img_dir = "/media/jhc/4AD250EDD250DEAF/dataset/coco/val2017"
     annot_path = "/media/jhc/4AD250EDD250DEAF/dataset/coco/annotations_trainval2017/annotations/instances_val2017.json"
 
+    img_dir = "/home/daton/Downloads/coco/val2017"
+    annot_path = "/home/daton/Downloads/coco/annotations_trainval2017/annotations/instances_val2017.json"
+
     from general_object_recognizer.Data.for_train.coco_dataset import COCODataset
+    from general_object_recognizer.Data.data_utils import Preprocessing
     dataset = COCODataset(
         img_dir=img_dir,
         annot_path=annot_path
     )
-    dataset = AugmentedDataset(dataset)
-    for items in dataset:
-        print(items)
-        break
+    preproc = Preprocessing(img_size=(720, 1280))
+    dataset = AugmentedDataset(dataset, preproc=preproc)
+    for img0, img, labels0, labels, img_shape, img_id in dataset:
+        plot_labels(img0, labels0)

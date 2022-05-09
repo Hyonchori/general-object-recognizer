@@ -1,7 +1,7 @@
 # COCO format dataset
-
 import os
 import warnings
+from copy import deepcopy
 
 import cv2
 import numpy as np
@@ -17,7 +17,7 @@ class COCODataset(Dataset):
             img_dir: str = None,
             annot_path: str = None,
             targets: str = ("cls", "bbox", "segmentation"),
-            img_size: int = (720, 1280),
+            img_size=(720, 1280),
             preproc=None
     ):
         super().__init__()
@@ -91,11 +91,12 @@ class COCODataset(Dataset):
         return img, labels.copy(), img_shape, np.array([id_])
 
     def __getitem__(self, index):
-        img0, labels, img_shape, img_id = self.pull_item(index)
+        img0, labels0, img_shape, img_id = self.pull_item(index)
         img = img0.copy()
+        labels = deepcopy(labels0)
         if self.preproc is not None:
-            img, labels = self.preproc(img, labels)
-        return img0, img, labels, img_shape, img_id
+            img, labels = self.preproc(img, labels0)
+        return img0, img, labels0, labels, img_shape, img_id
 
 
 if __name__ == "__main__":
@@ -131,7 +132,7 @@ if __name__ == "__main__":
 
     colors = Colors()
 
-    for img0, img, labels, img_shape, img_id in dataset:
+    for img0, img, labels0, labels, img_shape, img_id in dataset:
         print(img0.shape)
         for label in labels:
             if label == "bbox":
