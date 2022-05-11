@@ -88,13 +88,15 @@ class Preprocessing:
             scaling: bool = True,
             normalize: bool = True,
             bgr2rgb: bool = True,
-            swap: bool = True
+            swap: bool = True,
+            contiguous: bool = True
     ):
         self.img_size = img_size
         self.scaling = scaling
         self.normalize = normalize
         self.bgr2rgb = bgr2rgb
         self.swap = swap
+        self.contiguous = contiguous
 
         self.mean = np.array([0.485, 0.456, 0.406])
         self.std = np.array([0.299, 0.224, 0.225])
@@ -114,5 +116,7 @@ class Preprocessing:
             img = img[..., ::-1]
         if self.swap:
             img = img.transpose(self.swap_channels)
+        if self.contiguous:
+            img = np.ascontiguousarray(img)
         return img, labels
 

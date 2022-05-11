@@ -4,7 +4,7 @@ import torch
 from thop import profile
 
 
-def model_info(model, img_size=1280, model_name=None, verbose=False):
+def model_info(model, img_size=1280, verbose=False):
     n_p = sum(x.numel() for x in model.parameters())  # number parameters
     n_g = sum(x.numel() for x in model.parameters() if x.requires_grad)  # number gradients
     if verbose:
@@ -20,6 +20,6 @@ def model_info(model, img_size=1280, model_name=None, verbose=False):
     flops *= img_size[0] / stride * img_size[1] / stride * 2 / 1e9
     n_p /= 1e6
     n_g /= 1e6
-    model_name = model_name if model_name is not None else "Model"
+    model_name = model.name if hasattr(model, "name") else "Model"
     print(f"{model_name} Summary: {len(list(model.modules()))} layers, " +
           f"{n_p:.1f}M parameters, {n_g:.1f}M gradients, {flops:.2f} GFLOPs given image size {img_size}")

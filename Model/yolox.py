@@ -9,6 +9,7 @@ from .heads.yolox_head import YOLOXHead
 class YOLOX(nn.Module):
     def __init__(
             self,
+            name: str,
             backbone: CSPDarknet = None,
             neck: PAFPN = None,
             head: YOLOXHead = None
@@ -22,6 +23,7 @@ class YOLOX(nn.Module):
             head = YOLOXHead(num_classes=80)  # for COCO dataset
         assert len(backbone.out_features) == len(neck.in_features) and \
                len(neck.out_features) == len(head.in_channels)
+        self.name = name
         self.backbone = backbone
         self.neck = neck
         self.head = head

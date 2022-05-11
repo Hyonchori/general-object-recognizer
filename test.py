@@ -4,13 +4,17 @@ from Data.for_train.coco_dataset import COCODataset
 from Data.for_train.augmented_dataset import AugmentedDataset
 from Data.data_utils import Preprocessing, plot_labels
 
-from Model.backbones.darknet import CSPDarknet
-from Model.necks.pafpn import PAFPN
-from Model.heads.yolox_head import YOLOXHead
 from Model.yolox import YOLOX
+from Model.model_utils import model_info
+
+from Train.losses.detection_loss import get_detection_losses
 
 if __name__ == "__main__":
-    '''val_dir = "/home/daton/Downloads/coco/val2017"
+    model = YOLOX(name="yolox")
+    #model.eval()
+    model_info(model)
+
+    val_dir = "/home/daton/Downloads/coco/val2017"
     val_path = "/home/daton/Downloads/coco/annotations_trainval2017/annotations/instances_val2017.json"
 
     val_dir = "/media/jhc/4AD250EDD250DEAF/dataset/coco/val2017"
@@ -22,29 +26,23 @@ if __name__ == "__main__":
     dataset = AugmentedDataset(dataset, img_size=img_size, preproc=preproc)
 
     for img0, img, labels0, labels, img_info, img_id in dataset:
-        plot_labels(img0, labels0)'''
+        print(img.shape)
+        img = torch.from_numpy(img)[None]
+        print(img.shape)
+        pred = model(img)
 
-    backbone = CSPDarknet()
-    is1 = torch.randn((2, 3, 736, 1280))
-    bbo = backbone(is1)
-    for k, o in bbo.items():
-        print(k)
-        print(o.shape)
-    print("")
+        if model.training:
+            outputs, x_shifts, y_shifts, expanded_strides, origin_preds, dtype = pred
+            losses = get_detection_losses(
+                img.shape[2:],
+                outputs,
+                x_shifts,
+                y_shifts,
+                expanded_strides,
+                labels["bbox"],
+                origin_preds,
+                dtype
+            )
+        plot_labels(img0, labels0)
 
-    neck = PAFPN()
-    no = neck(bbo)
-    for k, o in no.items():
-        print(k)
-        print(o.shape)
-    print("")
 
-    head = YOLOXHead(num_classes=80)
-    head.eval()
-    ho = head(no)
-    print(ho.shape)
-
-    model = YOLOX()
-    model.eval()
-    mo = model(is1)
-    print(mo.shape)
