@@ -7,6 +7,7 @@ from Data.data_utils import Preprocessing, plot_labels
 from Model.backbones.darknet import CSPDarknet
 from Model.necks.pafpn import PAFPN
 from Model.heads.yolox_head import YOLOXHead
+from Model.yolox import YOLOX
 
 if __name__ == "__main__":
     '''val_dir = "/home/daton/Downloads/coco/val2017"
@@ -36,9 +37,14 @@ if __name__ == "__main__":
     for k, o in no.items():
         print(k)
         print(o.shape)
+    print("")
 
     head = YOLOXHead(num_classes=80)
+    head.eval()
     ho = head(no)
-    print(head.training)
-    for o in ho:
-        print(o.shape)
+    print(ho.shape)
+
+    model = YOLOX()
+    model.eval()
+    mo = model(is1)
+    print(mo.shape)
