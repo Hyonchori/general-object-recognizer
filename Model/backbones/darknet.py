@@ -3,7 +3,7 @@ from typing import List
 import torch.nn as nn
 
 from .base_backbone import BaseBackbone
-from ..building_blcoks import BaseConv, CSPLayer, DWConv, Focus, SPPBottleNeck
+from ..building_blocks import BaseConv, CSPLayer, DWConv, Focus, SPPBottleNeck
 
 
 class CSPDarknet(BaseBackbone):
@@ -32,7 +32,7 @@ class CSPDarknet(BaseBackbone):
                 act=act
             )
         )
-        self.dart3 = nn.Sequential(
+        self.dark3 = nn.Sequential(
             Conv(base_channels * 2, base_channels * 4, 3, 2, act=act),
             CSPLayer(
                 base_channels * 4,
@@ -42,7 +42,7 @@ class CSPDarknet(BaseBackbone):
                 act=act
             )
         )
-        self.dart4 = nn.Sequential(
+        self.dark4 = nn.Sequential(
             Conv(base_channels * 4, base_channels * 8, 3, 2, act=act),
             CSPLayer(
                 base_channels * 8,
