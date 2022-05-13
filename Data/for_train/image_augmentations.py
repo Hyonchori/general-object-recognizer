@@ -7,6 +7,13 @@ import cv2
 import numpy as np
 
 
+def segcls2seg(seg_cls):
+    seg = seg_cls[:-1]
+    xs = seg[0::2]
+    ys = seg[1::2]
+    return np.concatenate([xs, ys]).reshape(2, -1).T
+
+
 def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.2):
     # box1(4,n), box2(4,n)
     # Compute candidate boxes which include following 5 things:
@@ -23,19 +30,22 @@ def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.2):
 
 
 def resample_segments(segments, n=1000):
-    # Up-sample an (n, 2) segments
-    for i, (seg, cls) in enumerate(segments):
+    # Up-sample an (n, s + 1) segments
+    for i, seg_cls in enumerate(segments):
+        seg = segcls2seg(seg_cls)
         seg = np.append(seg, seg[0:1], axis=0)  # Interpolate empty between first and last points
         x = np.linspace(0, len(seg) - 1, n)
         xp = np.arange(len(seg))
-        segments[i][0] = np.concatenate([np.interp(x, xp, seg[:, i]) for i in range(2)]).reshape(2, -1).T
+        seg = np.concatenate([np.interp(x, xp, seg[:, i]) for i in range(2)]).reshape(2, -1).T.reshape(-1)
+        segments[i][:len(seg)] = seg
     return segments
 
 
 def get_valid_segment_indices(segments, width, height):
-    # filtering segments(n, 2) that exist in out of image
+    # filtering segments(n, s + 1) that exist in out of image
     valid_indices = []
-    for segment in segments:
+    for seg_cls in segments:
+        segment = segcls2seg(seg_cls)
         x, y = segment.T
         bbox = [x.min(), y.min(), x.max(), y.max()]
         valid = bbox[0] < width and bbox[1] < height and bbox[2] > 0 and bbox[3] > 0
@@ -65,15 +75,18 @@ def scale_and_shift_bboxes(bboxes, scale, w_shift, h_shift):
 
 
 def scale_and_shift_segments(segments, scale, w_shift, h_shift):
-    # scale and shift segments(n, 2)
+    # scale and shift segments(n, s + 1)
     if isinstance(scale, tuple):
         x_scale = scale[0]
         y_scale = scale[1]
     else:
         x_scale, y_scale = scale, scale
     for seg_i in range(segments.shape[0]):
-        segments[seg_i][0][:, 0:1] = segments[seg_i][0][:, 0:1] * x_scale + w_shift
-        segments[seg_i][0][:, 1:2] = segments[seg_i][0][:, 1:2] * y_scale + h_shift
+        seg = segcls2seg(segments[seg_i])
+        seg[:, 0] = seg[:, 0] * x_scale + w_shift
+        seg[:, 1] = seg[:, 1] * y_scale + h_shift
+        seg = seg.reshape(-1)
+        segments[seg_i][:len(seg)] = seg
     return segments
 
 
@@ -129,6 +142,9 @@ def get_mosaic_img(img_infos, mosaic_labels, input_w, input_h):
                 mosaic_labels[label].append(labels[label])
 
     for label in mosaic_labels:
+        if label == "segmentation":
+            print(len(mosaic_labels[label]))
+
         mosaic_labels[label] = np.concatenate(mosaic_labels[label], 0)
         if label == "bbox":
             valid_bbox_indices = get_valid_bbox_indices(
@@ -137,7 +153,7 @@ def get_mosaic_img(img_infos, mosaic_labels, input_w, input_h):
             mosaic_labels[label] = mosaic_labels[label][valid_bbox_indices]
         elif label == "segmentation":
             valid_segment_indices = get_valid_segment_indices(
-                mosaic_labels[label][:, 0], 2 * input_w, 2 * input_h
+                mosaic_labels[label], 2 * input_w, 2 * input_h
             )
             mosaic_labels[label] = mosaic_labels[label][valid_segment_indices]
 
@@ -213,7 +229,8 @@ def random_perspective(
         elif label == "segmentation":
             segments = labels[label]
             seg_r = resample_segments(segments)
-            for i, (seg, cls) in enumerate(seg_r):
+            for i, seg_cls in enumerate(seg_r):
+                seg = segcls2seg(seg_cls)
                 xy = np.ones((len(seg), 3))
                 xy[:, :2] = seg
                 xy = xy @ M.T

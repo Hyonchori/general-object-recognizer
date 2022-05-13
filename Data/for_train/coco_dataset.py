@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import cv2
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 from pycocotools.coco import COCO
 
@@ -16,7 +17,8 @@ class COCODataset(Dataset):
             self,
             img_dir: str = None,
             annot_path: str = None,
-            targets: str = ("cls", "bbox", "segmentation"),
+            targets=("cls", "bbox", "segmentation"),
+            max_labels: int = 500,
             img_size=(720, 1280),
             preproc=None
     ):
@@ -24,6 +26,7 @@ class COCODataset(Dataset):
         self.img_dir = img_dir
         self.annot_path = annot_path
         self.targets = targets
+        self.max_labels = max_labels
 
         self.coco = COCO(self.annot_path)
         self.ids = self.coco.getImgIds()
@@ -62,10 +65,7 @@ class COCODataset(Dataset):
                         labels[t].append(clean_xyxy)
                 elif t == "segmentation":
                     if obj["area"] > 0:
-                        xs = obj[t][0][0::2]
-                        ys = obj[t][0][1::2]
-                        seg = np.concatenate([xs, ys]).reshape(2, -1).T
-                        clean_seg = [seg, cls]
+                        clean_seg = obj[t][0] + [cls]
                         labels[t].append(clean_seg)
                 else:
                     raise f"Invalid target mode is given: {t}"
@@ -88,7 +88,7 @@ class COCODataset(Dataset):
         img_path = os.path.join(self.img_dir, file_name)
         img = cv2.imread(img_path)
         assert img is not None, f"Given image path {img_path} is wrong!"
-        return img, labels.copy(), img_shape, np.array([id_])
+        return img, labels, img_shape, np.array([id_])
 
     def __getitem__(self, index):
         img0, labels0, img_shape, img_id = self.pull_item(index)
@@ -97,6 +97,23 @@ class COCODataset(Dataset):
         if self.preproc is not None:
             img, labels = self.preproc(img, labels0)
         return img0, img, labels0, labels, img_shape, img_id
+
+    def collate_fn(self, batch):
+        img0, img, labels0, labels, img_shape, img_id = zip(*batch)
+
+        labels_batch = {k: [] for k in self.targets}
+        for label in labels:
+            for k in label:
+                labels_batch[k].append(label[k][None])
+        for k in labels_batch:
+            print(k)
+            print(len(labels_batch[k]))
+            if k == "bbox":
+                labels_batch[k] = torch.stack(labels_batch[k])
+                print(labels_batch[k].shape)
+        img = torch.stack(img, 0)
+        print(img.shape)
+        return img0, img
 
 
 if __name__ == "__main__":

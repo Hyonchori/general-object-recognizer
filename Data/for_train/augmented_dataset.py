@@ -152,6 +152,9 @@ class AugmentedDataset(Dataset):
                 img_p, labels_p = self.preproc(img_p, labels_p)
             return img, img_p, labels, labels_p, img_shape, img_id
 
+    def collate_fn(self, batch):
+        return self.dataset.collate_fn(batch)
+
 
 if __name__ == "__main__":
     img_dir = "/media/jhc/4AD250EDD250DEAF/dataset/coco/val2017"

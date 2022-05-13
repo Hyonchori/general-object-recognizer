@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import torch
 
 from .for_train.image_augmentations import letterbox
 
@@ -35,7 +36,7 @@ def plot_labels(img, labels):
                 cv2.rectangle(img, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
                               color, 2)
         elif label == "segmentation":
-            # seg: (n, 2) = ((x1, y1), (x2, y2), ...)
+            # seg: (n, s + 1) = (x1, y1, x2, y2, ... cls)
             for seg, cls in labels["segmentation"]:
                 color = colors(cls, True)
                 cv2.fillPoly(ref_img, [seg.astype(np.int64)], color)
@@ -89,7 +90,8 @@ class Preprocessing:
             normalize: bool = True,
             bgr2rgb: bool = True,
             swap: bool = True,
-            contiguous: bool = True
+            contiguous: bool = True,
+            to_tensor: bool = True,
     ):
         self.img_size = img_size
         self.scaling = scaling
@@ -97,16 +99,18 @@ class Preprocessing:
         self.bgr2rgb = bgr2rgb
         self.swap = swap
         self.contiguous = contiguous
+        self.to_tensor = to_tensor
 
         self.mean = np.array([0.485, 0.456, 0.406])
         self.std = np.array([0.299, 0.224, 0.225])
         self.swap_channels = (2, 0, 1)
 
-    def __call__(self, img, labels=None):
+    def __call__(self, img, labels=None, img_size=None):
         if img.dtype != np.float32:
             img = img.astype(np.float32)
-        if self.img_size is not None:
-            img, labels, _, _ = letterbox(img, labels, self.img_size, auto=False, fit=True)
+        if img_size is not None or self.img_size is not None:
+            img_size = img_size if img_size is not None else self.img_size
+            img, labels, _, _ = letterbox(img, labels, img_size, auto=False, fit=True)
         if self.scaling or self.normalize:
             img /= 255.0
         if self.normalize:
@@ -118,5 +122,31 @@ class Preprocessing:
             img = img.transpose(self.swap_channels)
         if self.contiguous:
             img = np.ascontiguousarray(img)
+        if self.to_tensor:
+            img = torch.from_numpy(img)
+            if labels is not None:
+                for label in labels:
+                    if label in ["cls", "bbox"]:
+                        labels[label] = torch.from_numpy(labels[label])
+                    elif label == "segmentation":
+                        for i, _ in enumerate(labels[label]):
+                            labels[label][i][0] = torch.from_numpy(labels[label][i][0])
         return img, labels
 
+
+def preproc_labels(
+        labels: torch.Tensor,
+        device: torch.device,
+        half: bool = False
+):
+    for label in labels:
+        if label in ["cls", "bbox"]:
+            labels[label] = labels[label].to(device)
+            if half:
+                labels[label] = labels[label].half()
+        elif label == "segmentation":
+            for i, _ in enumerate(labels[label]):
+                labels[label][i][0] = labels[label][i][0].to(device)
+                if half:
+                    labels[label][0] = labels[label][0].half()
+    return labels
