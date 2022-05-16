@@ -1,48 +1,11 @@
-import cv2
 import numpy as np
-import torch
-
-from .for_train.image_augmentations import letterbox
 
 
-class Colors:
-    # Ultralytics color palette https://ultralytics.com/
-    def __init__(self):
-        # hex = matplotlib.colors.TABLEAU_COLORS.values()
-        hex = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
-               '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
-        self.palette = [self.hex2rgb('#' + c) for c in hex]
-        self.n = len(self.palette)
-
-    def __call__(self, i, bgr=False):
-        c = self.palette[int(i) % self.n]
-        return (c[2], c[1], c[0]) if bgr else c
-
-    @staticmethod
-    def hex2rgb(h):  # rgb order (PIL)
-        return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
-
-
-colors = Colors()
-
-
-def plot_labels(img, labels):
-    ref_img = np.zeros_like(img)
-    for label in labels:
-        if label == "bbox":
-            # bbox: (n, 5) = ((x1, y1, x2, y2, cls), (x1, y1, x2, y2, cls), ...)
-            for bbox in labels["bbox"]:
-                color = colors(bbox[-1], True)
-                cv2.rectangle(img, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
-                              color, 2)
-        elif label == "segmentation":
-            # seg: (n, s + 1) = (x1, y1, x2, y2, ... cls)
-            for seg, cls in labels["segmentation"]:
-                color = colors(cls, True)
-                cv2.fillPoly(ref_img, [seg.astype(np.int64)], color)
-    img = cv2.addWeighted(img, 1, ref_img, 0.5, 0)
-    cv2.imshow("img", img)
-    cv2.waitKey(0)
+def segcls2seg(seg_cls):
+    seg = seg_cls[:-1]
+    xs = seg[0::2]
+    ys = seg[1::2]
+    return np.concatenate([xs, ys]).reshape(2, -1).T
 
 
 def segment2box(segment):
@@ -57,96 +20,37 @@ def filtering_labels(labels, img_w, img_h, iou_thr=0.3):
     for label in labels:
         if label == "bbox":
             bbox = labels[label]
-            origin_area = (bbox[:, 2] - bbox[:, 0]) * (bbox[:, 3] - bbox[:, 1])
-            vbbox = np.zeros((len(bbox), 4))
-            vbbox[:, 0] = np.max((bbox[:, 0], vbbox[:, 0]), axis=0)
-            vbbox[:, 1] = np.max((bbox[:, 1], vbbox[:, 1]), axis=0)
-            vbbox[:, 2] = np.min((bbox[:, 2], np.ones(len(bbox)) * img_w), axis=0)
-            vbbox[:, 3] = np.min((bbox[:, 3], np.ones(len(bbox)) * img_h), axis=0)
-            viewable_area = (vbbox[:, 2] - vbbox[:, 0]) * (vbbox[:, 3] - vbbox[:, 1])
-            iou = viewable_area / origin_area
-            valid_indices = iou > iou_thr
+            print(labels[label].shape)
+            valid_indices = filtering_bboxes_indices(bbox, img_w, img_h, iou_thr)
             labels[label] = labels[label][valid_indices]
+            print(labels[label].shape)
 
         elif label == "segmentation":
-            valid_indices = []
-            for seg, _ in labels[label]:
-                bbox = segment2box(seg)
-                origin_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-                vbbox = [max(0, bbox[0]), max(0, bbox[1]), min(img_w, bbox[2]), min(img_h, bbox[3])]
-                viewable_area = (vbbox[2] - vbbox[0]) * (vbbox[3] - vbbox[1])
-                iou = viewable_area / origin_area
-                valid_indices.append(iou >= iou_thr)
+            print(labels[label].shape)
+            segment = labels[label][:, :-1]
+            xs = segment[:, 0::2]
+            ys = segment[:, 1::2]
+            bbox = np.stack([
+                np.min(xs, axis=1), np.min(ys, axis=1), np.max(xs, axis=1), np.max(ys, axis=1)
+            ]).T
+            valid_indices = filtering_bboxes_indices(bbox, img_w, img_h, iou_thr)
             labels[label] = labels[label][valid_indices]
+            print(labels[label].shape)
 
     return labels
 
 
-class Preprocessing:
-    def __init__(
-            self,
-            img_size=(720, 1280),
-            scaling: bool = True,
-            normalize: bool = True,
-            bgr2rgb: bool = True,
-            swap: bool = True,
-            contiguous: bool = True,
-            to_tensor: bool = True,
-    ):
-        self.img_size = img_size
-        self.scaling = scaling
-        self.normalize = normalize
-        self.bgr2rgb = bgr2rgb
-        self.swap = swap
-        self.contiguous = contiguous
-        self.to_tensor = to_tensor
+def filtering_bboxes_indices(bbox, img_w, img_h, iou_thr=0.3):
+    # Filtering a bbox(n, 5) smaller than the threshold in the ratio
+    # between the size of viewable and the original
+    origin_area = (bbox[:, 2] - bbox[:, 0]) * (bbox[:, 3] - bbox[:, 1])
+    vbox = np.zeros((len(bbox), 4))
+    vbox[:, 0] = np.max((bbox[:, 0], vbox[:, 0]), axis=0)
+    vbox[:, 1] = np.max((bbox[:, 1], vbox[:, 1]), axis=0)
+    vbox[:, 2] = np.max((bbox[:, 2], np.ones(len(bbox)) * img_w), axis=0)
+    vbox[:, 3] = np.max((bbox[:, 3], np.ones(len(bbox)) * img_h), axis=0)
+    viewable_area = (vbox[:, 2] - vbox[:, 0]) * (vbox[:, 3] - vbox[:, 1])
+    iou = viewable_area / origin_area
+    valid_indices = iou > iou_thr
+    return valid_indices
 
-        self.mean = np.array([0.485, 0.456, 0.406])
-        self.std = np.array([0.299, 0.224, 0.225])
-        self.swap_channels = (2, 0, 1)
-
-    def __call__(self, img, labels=None, img_size=None):
-        if img.dtype != np.float32:
-            img = img.astype(np.float32)
-        if img_size is not None or self.img_size is not None:
-            img_size = img_size if img_size is not None else self.img_size
-            img, labels, _, _ = letterbox(img, labels, img_size, auto=False, fit=True)
-        if self.scaling or self.normalize:
-            img /= 255.0
-        if self.normalize:
-            img -= self.mean
-            img /= self.std
-        if self.bgr2rgb:
-            img = img[..., ::-1]
-        if self.swap:
-            img = img.transpose(self.swap_channels)
-        if self.contiguous:
-            img = np.ascontiguousarray(img)
-        if self.to_tensor:
-            img = torch.from_numpy(img)
-            if labels is not None:
-                for label in labels:
-                    if label in ["cls", "bbox"]:
-                        labels[label] = torch.from_numpy(labels[label])
-                    elif label == "segmentation":
-                        for i, _ in enumerate(labels[label]):
-                            labels[label][i][0] = torch.from_numpy(labels[label][i][0])
-        return img, labels
-
-
-def preproc_labels(
-        labels: torch.Tensor,
-        device: torch.device,
-        half: bool = False
-):
-    for label in labels:
-        if label in ["cls", "bbox"]:
-            labels[label] = labels[label].to(device)
-            if half:
-                labels[label] = labels[label].half()
-        elif label == "segmentation":
-            for i, _ in enumerate(labels[label]):
-                labels[label][i][0] = labels[label][i][0].to(device)
-                if half:
-                    labels[label][0] = labels[label][0].half()
-    return labels

@@ -9,6 +9,8 @@ import torch
 from torch.utils.data import Dataset
 from pycocotools.coco import COCO
 
+from .image_augmentations import resample_segment
+
 warnings.filterwarnings("ignore")
 
 
@@ -20,6 +22,7 @@ class COCODataset(Dataset):
             targets=("cls", "bbox", "segmentation"),
             max_labels: int = 500,
             img_size=(720, 1280),
+            resample_segment: bool = True,
             preproc=None
     ):
         super().__init__()
@@ -27,6 +30,7 @@ class COCODataset(Dataset):
         self.annot_path = annot_path
         self.targets = targets
         self.max_labels = max_labels
+        self.resample_segment = resample_segment
 
         self.coco = COCO(self.annot_path)
         self.ids = self.coco.getImgIds()
@@ -54,7 +58,7 @@ class COCODataset(Dataset):
             cls = obj["category_id"]
             for t in self.targets:
                 if t == "cls":
-                    labels[t].append(cls)
+                    labels[t].append([cls])
                 elif t == "bbox":
                     x1 = obj[t][0]
                     y1 = obj[t][1]
@@ -65,7 +69,10 @@ class COCODataset(Dataset):
                         labels[t].append(clean_xyxy)
                 elif t == "segmentation":
                     if obj["area"] > 0:
-                        clean_seg = obj[t][0] + [cls]
+                        seg = obj[t][0]
+                        if self.resample_segment:
+                            seg = resample_segment(seg)
+                        clean_seg = seg + [cls]
                         labels[t].append(clean_seg)
                 else:
                     raise f"Invalid target mode is given: {t}"
@@ -101,69 +108,5 @@ class COCODataset(Dataset):
     def collate_fn(self, batch):
         img0, img, labels0, labels, img_shape, img_id = zip(*batch)
 
-        labels_batch = {k: [] for k in self.targets}
-        for label in labels:
-            for k in label:
-                labels_batch[k].append(label[k][None])
-        for k in labels_batch:
-            print(k)
-            print(len(labels_batch[k]))
-            if k == "bbox":
-                labels_batch[k] = torch.stack(labels_batch[k])
-                print(labels_batch[k].shape)
-        img = torch.stack(img, 0)
-        print(img.shape)
         return img0, img
 
-
-if __name__ == "__main__":
-    img_dir = "/home/daton/Downloads/coco/val2017"
-    annot_path = "/home/daton/Downloads/coco/annotations_trainval2017/annotations/instances_val2017.json"
-
-    import json
-    with open(annot_path) as f:
-        data = json.load(f)
-
-    # print(data)
-    dataset = COCODataset(img_dir=img_dir,
-                          annot_path=annot_path,)
-
-
-    class Colors:
-        # Ultralytics color palette https://ultralytics.com/
-        def __init__(self):
-            # hex = matplotlib.colors.TABLEAU_COLORS.values()
-            hex = ('FF3838', 'FF9D97', 'FF701F', 'FFB21D', 'CFD231', '48F90A', '92CC17', '3DDB86', '1A9334', '00D4BB',
-                   '2C99A8', '00C2FF', '344593', '6473FF', '0018EC', '8438FF', '520085', 'CB38FF', 'FF95C8', 'FF37C7')
-            self.palette = [self.hex2rgb('#' + c) for c in hex]
-            self.n = len(self.palette)
-
-        def __call__(self, i, bgr=False):
-            c = self.palette[int(i) % self.n]
-            return (c[2], c[1], c[0]) if bgr else c
-
-        @staticmethod
-        def hex2rgb(h):  # rgb order (PIL)
-            return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
-
-
-    colors = Colors()
-
-    for img0, img, labels0, labels, img_shape, img_id in dataset:
-        print(img0.shape)
-        for label in labels:
-            if label == "bbox":
-                for bbox in labels["bbox"]:
-                    color = colors(bbox[-1], True)
-                    cv2.rectangle(img0, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])),
-                                  color)
-            elif label == "segmentation":
-                for seg_cls in labels["segmentation"]:
-                    print(seg_cls)
-                    seg, cls = seg_cls[0], seg_cls[-1]
-                    color = colors(cls, True)
-                    for x, y in seg:
-                        cv2.circle(img0, (int(x), int(y)), 1, color, -1)
-
-        cv2.imshow("img0", img0)
-        cv2.waitKey(0)
