@@ -6,7 +6,12 @@ import random
 import cv2
 import numpy as np
 
-from ..data_utils import segcls2seg
+
+def segcls2seg(seg_cls):
+    seg = seg_cls[:-1]
+    xs = seg[0::2]
+    ys = seg[1::2]
+    return np.concatenate([xs, ys]).reshape(2, -1).T
 
 
 def resample_segment(
@@ -76,10 +81,8 @@ def get_mosaic_img(img_list, label_list, shape_list, input_h, input_w):
                 if label in ["bbox", "segmentation"]:
                     labels[label] = scale_and_shift_labels(labels[label], scale, padw, padh)
                 mosaic_labels[label].append(labels[label])
-    print("mosaic")
     for label in mosaic_labels:
         mosaic_labels[label] = np.concatenate(mosaic_labels[label], 0)
-        print(f"\t{label}: {mosaic_labels[label].shape} ->")
         if label == "bbox":
             valid_indices = get_valid_bbox_indices(
                 mosaic_labels[label], 2 * input_w, 2 * input_h
@@ -87,23 +90,22 @@ def get_mosaic_img(img_list, label_list, shape_list, input_h, input_w):
             mosaic_labels[label] = mosaic_labels[label][valid_indices]
         elif label == "segmentation":
             valid_indices = get_valid_segment_indices(
-                mosaic_labels[label], 2 * input_w, input_h
+                mosaic_labels[label], 2 * input_w, 2 * input_h
             )
             mosaic_labels[label] = mosaic_labels[label][valid_indices]
-        print(f"\t{label}: {mosaic_labels[label].shape}")
 
     return mosaic_img, mosaic_labels
 
 
-def scale_and_shift_labels(labels, scale, w_shift, h_shift):
+def scale_and_shift_labels(labels, scale, x_shift, y_shift):
     # scale and shift segments(n, (4 or s) + 1)
     if isinstance(scale, tuple):
         x_scale = scale[0]
         y_scale = scale[1]
     else:
         x_scale = y_scale = scale
-    labels[:, 0::2][:, :-1] = labels[:, 0::2][:, :-1] * x_scale + w_shift
-    labels[:, 1::2] = labels[:, 1::2] * y_scale + h_shift
+    labels[:, 0::2][:, :-1] = labels[:, 0::2][:, :-1] * x_scale + x_shift
+    labels[:, 1::2] = labels[:, 1::2] * y_scale + y_shift
     return labels
 
 
@@ -174,9 +176,7 @@ def random_perspective(
         else:
             img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
 
-    print("\nperspective")
     for label in labels:
-        print(f"\t{label}: {labels[label].shape} ->")
         if label == "bbox":
             bboxes = labels[label]
             n = len(bboxes)
@@ -190,6 +190,10 @@ def random_perspective(
             y = xy[:, [1, 3, 5, 7]]
             new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
             bboxes[:, :4] = new
+            valid_indices = get_valid_bbox_indices(
+                bboxes, img.shape[1], img.shape[0]
+            )
+            labels[label] = labels[label][valid_indices]
 
         elif label == "segmentation":
             segments = labels[label]
@@ -201,7 +205,10 @@ def random_perspective(
                 xy = xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]
                 xy = xy.reshape(-1)
                 labels[label][i][:len(xy)] = xy
-        print(f"\t{label}: {labels[label].shape}")
+            valid_indices = get_valid_segment_indices(
+                labels[label], img.shape[1], img.shape[0]
+            )
+            labels[label] = labels[label][valid_indices]
     return img, labels
 
 
@@ -219,3 +226,146 @@ def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.2):
         & (ar < ar_thr)
     )  # candidates
 
+
+def letterbox(
+        img: np.ndarray,
+        labels=None,
+        new_shape=(640, 640),
+        color: int = (114, 114, 114),
+        auto: bool = True,
+        stretch: bool = False,
+        stride: int = 32,
+        dnn_pad: bool = False
+):
+    # resize and pad image while meeting stride-multiple constraints
+    shape = img.shape[: 2]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # if fit == True: all components of new_shape should be divided by stride for model input
+    if dnn_pad:
+        new_shape = [x + (x + stride) % stride for x in new_shape]
+
+    if img.shape[:2] == new_shape:
+        return img, labels, 1., (0, 0)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+    # Compute padding
+    ratio = r, r  # width, height ratios
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif stretch:  # stretch
+        dw, dh = 0.0, 0.0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    if shape[::-1] != new_unpad:  # resize
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+
+    if labels is not None:
+        for label in labels:
+            if len(labels[label]) > 0:
+                if label in ["bbox", "segmentation"]:
+                    labels[label] = scale_and_shift_labels(labels[label], ratio, dw, dh)
+
+    return img, labels, ratio, (dw, dh)
+
+
+def get_mixup_img(img, labels, img2, labels2):
+    # apply mixup augmentation
+    r = np.random.beta(32., 32.)  # mixup ratio, alpha=beta=32.0
+    img = (img * r + img2 * (1 - r)).astype(np.uint8)
+    for label in labels:
+        labels[label] = np.concatenate((labels[label], labels2[label]), 0)
+    return img, labels
+
+
+def color_aug(img):
+    def _convert(img, alpha=1, beta=0):
+        tmp = img.astype(float) * alpha + beta
+        tmp[tmp < 0] = 0
+        tmp[tmp > 255] = 255
+        img[:] = tmp
+
+    img = img.copy()
+
+    if random.randrange(2):
+        _convert(img, beta=random.uniform(-32, 32))
+
+    if random.randrange(2):
+        _convert(img, alpha=random.uniform(0.5, 1.5))
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+    if random.randrange(2):
+        tmp = img[:, :, 0].astype(int) + random.randint(-18, 18)
+        tmp %= 180
+        img[:, :, 0] = tmp
+
+    if random.randrange(2):
+        _convert(img[:, :, 1], alpha=random.uniform(0.5, 1.5))
+
+    img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+    return img
+
+
+def flip_lr(img, labels):
+    _, width, _ = img.shape
+    if random.randrange(2):
+        img = img[:, ::-1].astype(np.uint8)
+        for label in labels:
+            if label == "bbox":
+                labels[label][:, 0::2][:, :-1] = width - labels[label][:, 2::-2]
+            elif label == "segmentation":
+                labels[label][:, 0::2][:, :-1] = width - labels[label][:, 0::2][:, :-1]
+    return img, labels
+
+
+class BlurAug:
+    def __init__(self):
+        import imgaug.augmenters as iaa
+        self.aug = iaa.OneOf([
+            iaa.GaussianBlur(),
+            iaa.MotionBlur()
+        ])
+
+    def __call__(self, image):
+        image = self.aug(image=image)
+        return image
+
+
+class NoiseAug:
+    def __init__(self):
+        import imgaug.augmenters as iaa
+        self.aug = iaa.OneOf([
+            iaa.AdditiveGaussianNoise(),
+            iaa.Dropout()
+        ])
+
+    def __call__(self, image):
+        image = self.aug(image=image)
+        return image
+
+
+class WeatherAug:
+    def __init__(self):
+        import imgaug.augmenters as iaa
+        self.aug = iaa.OneOf([
+            iaa.Fog(),
+            iaa.Snowflakes(),
+            iaa.Rain()
+        ])
+
+    def __call__(self, image):
+        image = self.aug(image=image)
+        return image

@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from ..Data.data_utils import segcls2seg
+from ..Data.for_train.image_augmentations import segcls2seg
 
 
 class Colors:
