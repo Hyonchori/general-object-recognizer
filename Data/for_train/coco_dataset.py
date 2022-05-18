@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import Dataset
 from pycocotools.coco import COCO
 
-from .image_augmentations import resample_segment
+from .image_augmentations import resample_segment, pad_labels
 
 warnings.filterwarnings("ignore")
 
@@ -28,6 +28,8 @@ class COCODataset(Dataset):
         super().__init__()
         self.img_dir = img_dir
         self.annot_path = annot_path
+        if isinstance(targets, str):
+            targets = [targets]
         self.targets = targets
         self.max_labels = max_labels
         self.resample_segment = resample_segment
@@ -107,6 +109,13 @@ class COCODataset(Dataset):
 
     def collate_fn(self, batch):
         img0, img, labels0, labels, img_shape, img_id = zip(*batch)
-
-        return img0, img
+        labels = [pad_labels(lb) for lb in labels]
+        labels_batch = {}
+        for label in self.targets:
+            tmp = [lb[label] for lb in labels]
+            if label == "cls":
+                labels_batch[label] = torch.cat(tmp)
+            else:
+                labels_batch[label] = torch.stack(tmp)
+        return img0, torch.stack(img, 0), labels0, labels_batch, img_shape, img_id
 

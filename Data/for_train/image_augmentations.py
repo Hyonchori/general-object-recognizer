@@ -4,6 +4,7 @@ import math
 import random
 
 import cv2
+import torch
 import numpy as np
 
 
@@ -75,7 +76,6 @@ def get_mosaic_img(img_list, label_list, shape_list, input_h, input_w):
         padw, padh = l_x1 - s_x1, l_y1 - s_y1
 
         labels = copy.deepcopy(_labels)
-        labels["cls"][0] = 3
         for label in labels:
             if len(labels[label]) > 0:
                 if label in ["bbox", "segmentation"]:
@@ -369,3 +369,18 @@ class WeatherAug:
     def __call__(self, image):
         image = self.aug(image=image)
         return image
+
+
+def pad_labels(labels, max_labels=100):
+    for label in labels:
+        if label in ["bbox", "segmentation"]:
+            label_num = 5 if label == "bbox" else 1001
+            if type(labels[label] == torch.Tensor):
+                padded_labels = torch.zeros((max_labels, label_num), dtype=labels[label].dtype)
+            else:
+                padded_labels = np.zeros((max_labels, label_num))
+            padded_labels[range(len(labels[label]))[: max_labels]] = labels[label][
+                : max_labels
+            ]
+            labels[label] = padded_labels
+    return labels
