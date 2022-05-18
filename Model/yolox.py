@@ -9,7 +9,7 @@ from .heads.yolox_head import YOLOXHead
 class YOLOX(nn.Module):
     def __init__(
             self,
-            name: str,
+            name: str = "YOLOx",
             backbone: CSPDarknet = None,
             neck: PAFPN = None,
             head: YOLOXHead = None
