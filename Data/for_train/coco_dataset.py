@@ -57,7 +57,7 @@ class COCODataset(Dataset):
         annotations = self.coco.loadAnns(anno_ids)
         labels = {t: [] for t in self.targets}
         for obj in annotations:
-            cls = obj["category_id"]
+            cls = self.class_ids.index(obj["category_id"])
             for t in self.targets:
                 if t == "cls":
                     labels[t].append([cls])

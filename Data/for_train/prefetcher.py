@@ -33,7 +33,7 @@ class DataPrefertcher:
             self.record_stream(input)
         if target is not None:
             for label in target:
-                target[label] = target[label].record_stream(torch.cuda.current_stream())
+                target[label].record_stream(torch.cuda.current_stream())
         self.preload()
         return input, target
 
