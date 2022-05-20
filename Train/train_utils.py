@@ -1,5 +1,6 @@
 # YOLOv5 reference
 
+import os
 import time
 from copy import deepcopy
 
@@ -122,3 +123,27 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True):
     area_i = torch.prod(br - tl, 2) * en  # * ((tl < br).all())
     return area_i / (area_a[:, None] + area_b - area_i)
 
+
+def get_total_and_free_memory_in_Mb(cuda_device):
+    devices_info_str = os.popen(
+        "nvidia-smi --query-gpu=memory.total,memory.used --format=csv,nounits,noheader"
+    )
+    devices_info = devices_info_str.read().strip().split("\n")
+    if isinstance(cuda_device, torch.device):
+        cuda_device = int(str(cuda_device).split(":")[-1])
+    total, used = devices_info[int(cuda_device)].split(",")
+    return int(total), int(used)
+
+
+def occupy_memory(cuda_device, mem_ratio=0.95):
+    """
+    pre-allocate gpu memory for training to avoid memory Fragmentation.
+    """
+    if isinstance(cuda_device, torch.device):
+        cuda_device = int(str(cuda_device).split(":")[-1])
+    total, used = get_total_and_free_memory_in_Mb(cuda_device)
+    max_mem = int(total * mem_ratio)
+    block_mem = max_mem - used
+    x = torch.cuda.FloatTensor(256, 1024, block_mem)
+    del x
+    time.sleep(5)
